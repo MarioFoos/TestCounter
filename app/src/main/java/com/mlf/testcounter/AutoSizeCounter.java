@@ -2,22 +2,19 @@ package com.mlf.testcounter;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
-import android.text.TextPaint;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.util.TypedValue;
 import android.view.MotionEvent;
 import android.view.View;
-
 import androidx.appcompat.widget.AppCompatTextView;
 import androidx.core.content.res.ResourcesCompat;
-
 import java.util.Locale;
 
 // TextView autoajustable para mostrar número desde -99 hasta 999
@@ -40,26 +37,26 @@ public class AutoSizeCounter extends AppCompatTextView
     private static final long TIME_STEP_DELTA = 20;
     private static final long TIME_DELTA = 3000;
 
-    private final Paint paintFg;    // Relleno
-    private final Paint paintSt;    // Borde
-    private final Paint paintDFg;    // Relleno
-    private final Paint paintDSt;    // Borde
-    private final Paint paintAux;
+    private final Paint paintTextFill, paintTextSt;     // Relleno y borde de texto
+    private final Paint paintBackSt;                    // Fondo
+    private final Paint paintDeltaFill, paintDeltaSt;   // Relleno y borde del delta
 
-    private float textSize = 20f;   // Tamaño de texto mínimo
-    private float butSize = 20f;    // Tamaño de botones
-    private float deltaSize = 10f;    // Tamaño de botones
+    private Rect rcDec, rcInc, rcNumber, rcDelta;
+
+    private float textSize = 20f;       // Tamaño de texto mínimo
+    private float butSize = 20f;        // Tamaño de botones
+    private float deltaSize = 10f;      // Tamaño de botones
     private int value = VALUE_DEFAULT;
     private int delta = 0;
     private boolean deltaShowed = false;
 
-    private final Runnable runDec;
-    private final Runnable runInc;
-    private final Runnable runHideDelta;
+    private final Runnable runDec, runInc, runHideDelta;
     private Thread threadDec, threadInc, threadDelta;
     private int action = ACTION_NONE;
 
-    private Rect rcDec, rcInc, rcNumber, rcDelta;
+    // Fondo
+    private Rect rcCanvas;
+    private Bitmap bmpBg;
 
     public AutoSizeCounter(Context context)
     {
@@ -78,39 +75,35 @@ public class AutoSizeCounter extends AppCompatTextView
         Typeface typeBold = ResourcesCompat.getFont(context, R.font.consolebold);
         Typeface typeNormal = ResourcesCompat.getFont(context, R.font.console);
 
-        paintFg = new Paint();
-        paintFg.setTypeface(typeBold);
-        paintFg.setStyle(Paint.Style.FILL);
-        paintFg.setTextAlign(Paint.Align.LEFT);
+        // Fondo
+        paintBackSt = new Paint();
+        paintBackSt.setStyle(Paint.Style.STROKE);
 
-        paintSt = new Paint();
-        paintSt.setTypeface(typeBold);
-        paintSt.setStyle(Paint.Style.STROKE);
-        paintSt.setTextAlign(Paint.Align.LEFT);
-        paintSt.setStrokeWidth(2);
+        // Texto
+        paintTextFill = new Paint();
+        paintTextFill.setTypeface(typeBold);
+        paintTextFill.setStyle(Paint.Style.FILL);
+        paintTextFill.setTextAlign(Paint.Align.LEFT);
 
-        paintDFg = new Paint();
-        paintDFg.setTypeface(typeNormal);
-        paintDFg.setStyle(Paint.Style.FILL);
-        paintDFg.setTextAlign(Paint.Align.LEFT);
+        paintTextSt = new Paint();
+        paintTextSt.setTypeface(typeBold);
+        paintTextSt.setStyle(Paint.Style.STROKE);
+        paintTextSt.setTextAlign(Paint.Align.LEFT);
+        paintTextSt.setStrokeWidth(2);
 
-        paintDSt = new Paint();
-        paintDSt.setTypeface(typeNormal);
-        paintDSt.setStyle(Paint.Style.STROKE);
-        paintDSt.setTextAlign(Paint.Align.LEFT);
-        paintDSt.setStrokeWidth(1);
+        // Delta
+        paintDeltaFill = new Paint();
+        paintDeltaFill.setTypeface(typeNormal);
+        paintDeltaFill.setStyle(Paint.Style.FILL);
+        paintDeltaFill.setTextAlign(Paint.Align.LEFT);
 
-        paintAux = new Paint();
-        paintAux.setTypeface(typeBold);
-        paintAux.setStyle(Paint.Style.STROKE);
-        paintAux.setTextAlign(Paint.Align.LEFT);
-        paintAux.setColor(Color.RED);
-        paintAux.setStrokeWidth(1);
+        paintDeltaSt = new Paint();
+        paintDeltaSt.setTypeface(typeNormal);
+        paintDeltaSt.setStyle(Paint.Style.STROKE);
+        paintDeltaSt.setTextAlign(Paint.Align.LEFT);
+        paintDeltaSt.setStrokeWidth(1);
 
-        setValue(40);
-        calcColors();
-        setLineSpacing(0.0f, 1.0f);
-        setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize);
+        setColors();
 
         runDec = new Runnable()
         {
@@ -220,143 +213,106 @@ public class AutoSizeCounter extends AppCompatTextView
     }
 
     @Override
-    protected void onTextChanged(CharSequence text, int start, int lengthBefore, int lengthAfter)
-    {
-        super.onTextChanged(text, start, lengthBefore, lengthAfter);
-    }
-
-    @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec)
     {
-        int width = MeasureSpec.getSize(widthMeasureSpec);
-        int height = MeasureSpec.getSize(heightMeasureSpec);
-        if(width < MIN_WIDTH)
-        {
-            width = MIN_WIDTH;
-        }
-        if(height < MIN_HEIGHT)
-        {
-            height = MIN_HEIGHT;
-        }
+        int width = Math.max(MeasureSpec.getSize(widthMeasureSpec), MIN_WIDTH);
+        int height = Math.max(MeasureSpec.getSize(heightMeasureSpec), MIN_HEIGHT);
+
         calcAreas(width, height);
         calcTextSize();
+        buildBackground(width, height);
+
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
     }
 
+    /**
+     * Calcular todos los rectándulos que necesito
+     * @param width Ancho del canvas
+     * @param height Alto    del canvas
+     */
     public void calcAreas(int width, int height)
     {
-        int padding = (int)Math.round(width*0.025f);
-        int space =  (int)Math.round(width*0.15f);
-        int wbut =(int)Math.round(width*0.15f - padding);
+        int padding = Math.round(width*0.025f);
+        int space =  Math.round(width*0.15f);
+        int wbut = Math.round(width*0.15f - padding);
         int hbut = height - 2*padding;
         int hdelta = hbut/4;
+
+        rcCanvas = new Rect(0, 0, width, height);
         rcDec = new Rect(padding, padding, padding + wbut, padding + hbut);
         rcInc = new Rect(width - padding - wbut, rcDec.top, width - padding, rcDec.bottom);
         rcNumber = new Rect(rcDec.right + space, rcDec.top, rcInc.left - space, rcDec.bottom);
-        //rcDelta = new Rect(rcNumber.right + padding/2, rcDec.top, rcInc.left - padding/2, rcDec.top + hdelta);
         rcDelta = new Rect(rcNumber.right, rcDec.top, rcInc.left, rcDec.top + hdelta);
     }
 
+    /**
+     * Encontrar el tamaño del texto que se ajueste al área
+     */
+    public float calcFontSize(String text, Rect rc, Paint paint)
+    {
+        Paint paintCalc = new Paint(paint);
+        Rect bounds = new Rect();
+        float size = 20f;
+        int width = rc.width(), height = rc.height();
+        int len = text.length();
+
+        paintCalc.setTextSize(size);
+        paintCalc.getTextBounds(text, 0, len, bounds);
+        while(bounds.height() < height && bounds.width() < width)
+        {
+            ++size;
+            paintCalc.setTextSize(size);
+            paintCalc.getTextBounds(text, 0, len, bounds);
+        }
+        return size - 1;
+    }
+
+    /**
+     * Encontrar el tamaño del texto que se ajueste al área
+     */
     public void calcTextSize()
     {
-        String text = "44";
-        textSize = 20f;
-        int width = rcNumber.width(), height = rcNumber.height();
-        Rect bounds = getTextRect(text, textSize);
-        while(bounds.height() < height && bounds.width() < width)
+        if(rcNumber == null || rcDec == null || rcDelta == null)
         {
-            ++textSize;
-            bounds = getTextRect(text, textSize);
+            calcAreas(getWidth(), getHeight());
         }
-        --textSize;
-
-        text = "+";
-        butSize = 20f;
-        width = rcDec.width();
-        height = rcDec.height();
-        bounds = getTextRect(text, butSize);
-        while(bounds.height() < height && bounds.width() < width)
-        {
-            ++butSize;
-            bounds = getTextRect(text, butSize);
-        }
-        --butSize;
-
-        text = "+44";
-        deltaSize = 10f;
-        width = rcDelta.width();
-        height = rcDelta.height();
-        bounds = getTextRect(text, deltaSize);
-        while(bounds.height() < height && bounds.width() < width)
-        {
-            ++deltaSize;
-            bounds = getTextRect(text, deltaSize);
-        }
-        --deltaSize;
+        textSize = calcFontSize((getText().length() == 3) ? "-44" : "44", rcNumber, paintTextFill);
+        butSize = calcFontSize("+", rcDec, paintTextFill);
+        deltaSize = calcFontSize("+44", rcDelta, paintTextFill);
     }
 
-    private Rect getTextRect(String text, float textSize)
+    @Override
+    protected void onDraw(Canvas canvas)
     {
-        TextPaint paintCopy = new TextPaint(paintFg);
-        Rect bounds = new Rect();
-        paintCopy.setTextSize(textSize);
-        paintCopy.getTextBounds(text, 0, text.length(), bounds);
-        return bounds;
-    }
-
-    private void drawNumber(Canvas canvas)
-    {
+        // Fondo con los botones
+        canvas.drawBitmap(bmpBg, rcCanvas, rcCanvas, paintBackSt);
+        // Número
         drawText(canvas, getText().toString(), rcNumber, textSize);
-    }
-
-    private void drawButtons(Canvas canvas)
-    {
-        drawText(canvas, INC_TEXT, rcInc, butSize);
-        drawText(canvas, DEC_TEXT, rcDec, butSize);
-    }
-
-    private void drawDelta(Canvas canvas)
-    {
+        // Delta
         if(deltaShowed)
         {
             drawText(canvas, getDelta(), rcDelta, deltaSize);
         }
     }
 
-    private void drawText(Canvas canvas, String text, Rect rc, float textSize)
-    {
-        Rect bounds = getTextRect(text, textSize);
-        float x = rc.exactCenterX() - bounds.exactCenterX();
-        float y = rc.exactCenterY() - bounds.exactCenterY();
-
-        paintFg.setTextSize(textSize);
-        paintSt.setTextSize(textSize);
-
-        canvas.drawText(text, x, y, paintFg);
-        canvas.drawText(text, x, y, paintSt);
-
-        //canvas.drawRect(rc, paintAux);
-    }
-
-    @Override
-    protected void onDraw(Canvas canvas)
-    {
-        canvas.drawColor(getBackgroundColor());
-        drawNumber(canvas);
-        drawButtons(canvas);
-        drawDelta(canvas);
-    }
-
+    /**
+     * Encontrar nivel de gris
+     * @param color Color
+     * @return Nivel de gris
+     */
     private int getGray(int color)
     {
-        return (int) Math.round(0.299f*Color.red(color) + 0.587f*Color.green(color) + 0.114f*Color.blue(color));
+        return Math.round(0.299f*Color.red(color) + 0.587f*Color.green(color) + 0.114f*Color.blue(color));
     }
 
-    private void calcColors()
+    /**
+     * Establecer el color del texto
+     */
+    private void setColors()
     {
-        int clText;     // Color del texto
-        int clStroke;   // Color de línea
-        if(getGray(getBackgroundColor()) < 128)
+        int clText, clStroke;
+        int clBack = getBackgroundColor();
+        if(getGray(clBack) < 128)
         {
             clText = Color.WHITE;
             clStroke = GRAY_75;
@@ -366,33 +322,49 @@ public class AutoSizeCounter extends AppCompatTextView
             clText = Color.BLACK;
             clStroke = GRAY_25;
         }
-        paintFg.setColor(clText);
-        paintSt.setColor(clStroke);
-        paintDFg.setColor(clText);
-        paintDSt.setColor(clStroke);
+        // Fondo
+        paintBackSt.setColor(clText);
+        // Número y botones
+        paintTextFill.setColor(clText);
+        paintTextSt.setColor(clStroke);
+        // Delta
+        paintDeltaFill.setColor(clText);
+        paintDeltaSt.setColor(clStroke);
     }
 
-    @Override
-    public void setText(CharSequence text, BufferType type)
+    private void buildBackground(int width, int height)
     {
-        int newValue;
-        if((text == null) || (text.length() == 0))
-        {
-            newValue = 0;
-        }
-        else
-        {
-            try
-            {
-                newValue = Integer.parseInt(text.toString());
-            }
-            catch(Exception e)
-            {
-                newValue = 0;
-                e.printStackTrace();
-            }
-        }
-        setValue(newValue);
+        bmpBg = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bmpBg);
+
+        // Background
+        canvas.drawColor(getBackgroundColor());
+        // Buttons
+        drawText(canvas, INC_TEXT, rcInc, butSize);
+        drawText(canvas, DEC_TEXT, rcDec, butSize);
+    }
+
+    /**
+     * Dibujar el texto en el rectángulo
+     * @param canvas Canvas
+     * @param text Texto
+     * @param rc Rectángulo
+     * @param textSize Tamaño de fuente
+     */
+    private void drawText(Canvas canvas, String text, Rect rc, float textSize)
+    {
+        Rect bounds = new Rect();
+        paintTextFill.setTextSize(textSize);
+        paintTextFill.getTextBounds(text, 0, text.length(), bounds);
+
+        float x = rc.exactCenterX() - bounds.exactCenterX();
+        float y = rc.exactCenterY() - bounds.exactCenterY();
+
+        paintTextFill.setTextSize(textSize);
+        paintTextSt.setTextSize(textSize);
+
+        canvas.drawText(text, x, y, paintTextFill);
+        canvas.drawText(text, x, y, paintTextSt);
     }
 
     @Override
@@ -401,19 +373,16 @@ public class AutoSizeCounter extends AppCompatTextView
         return String.format(Locale.US, "%d", value);
     }
 
-    public String getDelta()
-    {
-        if(delta == 0)
-        {
-            return "=";
-        }
-        return String.format(Locale.US, (delta > 0) ? "+%d" : "%d", delta);
-    }
-
-    private boolean setValue(int newValue)
+    public boolean setValue(int newValue)
     {
         if(newValue < 100 && newValue > -100 && newValue != value)
         {
+            String before = String.format(Locale.US, "%d", value);
+            String after = String.format(Locale.US, "%d", newValue);
+            if(before.length() != after.length())
+            {
+                calcTextSize();
+            }
             this.value = newValue;
             invalidate();
             return true;
@@ -442,16 +411,25 @@ public class AutoSizeCounter extends AppCompatTextView
         }
     }
 
+    public String getDelta()
+    {
+        if(delta == 0)
+        {
+            return "=";
+        }
+        return String.format(Locale.US, (delta > 0) ? "+%d" : "%d", delta);
+    }
+
     @Override
     public void setBackgroundColor(int color)
     {
         super.setBackgroundColor(color);
-        calcColors();
+        setColors();
     }
 
     public int getBackgroundColor()
     {
         ColorDrawable cl = (ColorDrawable) getBackground();
-        return cl.getColor();
+        return (cl != null) ? cl.getColor() : Color.TRANSPARENT;
     }
 }
